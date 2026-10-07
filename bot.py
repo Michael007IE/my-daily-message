@@ -464,6 +464,21 @@ def telegram_webhook():
 
     return jsonify({"status": "ok"}), 200
 
+# Secret key to prevent random internet crawlers from triggering your message
+CRON_SECRET = os.environ.get("CRON_SECRET", "clonsilla-dispatch-secure-key")
+
+
+@app.route(f"/trigger/{CRON_SECRET}", methods=["GET", "POST"])
+def manual_cron_trigger():
+    if not TELEGRAM_CHAT_ID:
+        return jsonify({"error": "TELEGRAM_CHAT_ID not set"}), 500
+
+    digest = build_daily_digest()
+    send_telegram(TELEGRAM_CHAT_ID, digest)
+    return (
+        jsonify({"status": "dispatched", "recipient": TELEGRAM_CHAT_ID}),
+        200,
+    )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
