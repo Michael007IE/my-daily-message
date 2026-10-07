@@ -2,9 +2,9 @@ name: Send Daily Telegram Message
 
 on:
   schedule:
-    # 03:17 UTC -> 04:17 IST (Irish Standard Time / Summer)
-    # (Adjust to '17 4 * * *' in late October when clocks fall back to GMT)
-    - cron: '17 3 * * *'
+    # 00:16 UTC = 01:16 IST (Irish Standard Time / Summer)
+    # (Switch to '16 1 * * *' in late October when clocks go back to GMT)
+    - cron: '16 0 * * *'
   workflow_dispatch: # Allows manual triggers anytime
 
 jobs:
