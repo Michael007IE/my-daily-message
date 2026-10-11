@@ -1,6 +1,8 @@
 from datetime import date, datetime, timedelta
+import html
 import os
 import random
+import re
 from flask import Flask, jsonify, request
 import pytz
 import requests
@@ -201,71 +203,123 @@ def get_last_sunday_of_month(year, month):
     return last_day - timedelta(days=days_back)
 
 
+def get_last_saturday_of_month(year, month):
+    """Finds the last Saturday of a month."""
+    if month == 12:
+        last_day = date(year, 12, 31)
+    else:
+        last_day = date(year, month + 1, 1) - timedelta(days=1)
+    days_back = (last_day.weekday() - 5) % 7
+    return last_day - timedelta(days=days_back)
+
+
 # Multi-year exact calendar table for lunar/multi-faith observances
 MULTI_FAITH_HOLIDAYS = {
     # 2024
     (2024, 2, 10): "Lunar New Year",
+    (2024, 3, 25): "Holi – [Hindu Festival of Colours]",
     (2024, 4, 10): "Eid al-Fitr",
     (2024, 6, 16): "Eid al-Adha",
     (2024, 11, 1): "Diwali",
     # 2025
     (2025, 1, 29): "Lunar New Year",
+    (2025, 3, 14): "Holi – [Hindu Festival of Colours]",
     (2025, 3, 31): "Eid al-Fitr",
     (2025, 6, 6): "Eid al-Adha",
     (2025, 10, 20): "Diwali",
-    (2025, 10, 21): "Diwali",
     # 2026
     (2026, 2, 17): "Lunar New Year",
+    (2026, 3, 4): "Holi – [Hindu Festival of Colours]",
     (2026, 3, 20): "Eid al-Fitr",
     (2026, 5, 27): "Eid al-Adha",
     (2026, 11, 8): "Diwali",
     # 2027
     (2027, 2, 6): "Lunar New Year",
+    (2027, 3, 22): "Holi – [Hindu Festival of Colours]",
     (2027, 3, 10): "Eid al-Fitr",
     (2027, 5, 16): "Eid al-Adha",
     (2027, 10, 29): "Diwali",
     # 2028
     (2028, 1, 26): "Lunar New Year",
     (2028, 2, 26): "Eid al-Fitr",
+    (2028, 3, 11): "Holi – [Hindu Festival of Colours]",
     (2028, 5, 5): "Eid al-Adha",
     (2028, 10, 17): "Diwali",
     # 2029
     (2029, 2, 13): "Lunar New Year",
     (2029, 2, 14): "Eid al-Fitr",
+    (2029, 3, 1): "Holi – [Hindu Festival of Colours]",
     (2029, 4, 24): "Eid al-Adha",
     (2029, 11, 5): "Diwali",
     # 2030
     (2030, 2, 3): "Lunar New Year",
     (2030, 2, 4): "Eid al-Fitr",
+    (2030, 3, 20): "Holi – [Hindu Festival of Colours]",
     (2030, 4, 13): "Eid al-Adha",
     (2030, 10, 26): "Diwali",
     # 2031
     (2031, 1, 23): "Lunar New Year",
     (2031, 1, 24): "Eid al-Fitr",
+    (2031, 3, 9): "Holi – [Hindu Festival of Colours]",
     (2031, 4, 2): "Eid al-Adha",
     (2031, 11, 14): "Diwali",
     # 2032
     (2032, 2, 11): "Lunar New Year",
     (2032, 1, 14): "Eid al-Fitr",
     (2032, 3, 22): "Eid al-Adha",
+    (2032, 3, 27): "Holi – [Hindu Festival of Colours]",
     (2032, 11, 2): "Diwali",
     # 2033
     (2033, 1, 31): "Lunar New Year",
     (2033, 1, 2): "Eid al-Fitr",
-    (2033, 12, 23): "Eid al-Fitr",
     (2033, 3, 11): "Eid al-Adha",
+    (2033, 3, 16): "Holi – [Hindu Festival of Colours]",
     (2033, 10, 22): "Diwali",
     # 2034
     (2034, 2, 19): "Lunar New Year",
-    (2034, 12, 12): "Eid al-Fitr",
     (2034, 3, 1): "Eid al-Adha",
+    (2034, 3, 5): "Holi – [Hindu Festival of Colours]",
     (2034, 11, 10): "Diwali",
+    (2034, 12, 12): "Eid al-Fitr",
     # 2035
     (2035, 2, 8): "Lunar New Year",
-    (2035, 12, 1): "Eid al-Fitr",
     (2035, 2, 18): "Eid al-Adha",
+    (2035, 3, 25): "Holi – [Hindu Festival of Colours]",
     (2035, 10, 30): "Diwali",
+    (2035, 12, 1): "Eid al-Fitr",
 }
+
+# List of fixed dates (month, day) allowing multiple entries per date
+FIXED_CALENDAR_EVENTS = [
+    ((1, 1), "New Year's Day"),
+    ((1, 6), "Epiphany / Little Christmas"),
+    ((1, 26), "Australia Day"),
+    ((2, 1), "St Brigid's Day (Imbolc)"),
+    ((2, 14), "Valentine's Day"),
+    ((3, 8), "International Women's Day"),
+    ((3, 17), "St Patrick's Day"),
+    ((4, 1), "April Fools’ Day"),
+    ((4, 22), "Earth Day"),
+    ((4, 23), "St George's Day"),
+    ((5, 1), "May Day"),
+    ((5, 5), "Cinco de Mayo"),
+    ((5, 22), "International Biodiversity Day"),
+    ((6, 16), "Bloomsday"),
+    ((6, 21), "Summer Solstice"),
+    ((7, 4), "Independence Day"),
+    ((7, 14), "Bastille Day / Fête Nationale"),
+    ((9, 9), "World EV Day"),
+    ((10, 12), "Fiesta Nacional de España / Día de la Hispanidad"),
+    ((10, 31), "Halloween (Oíche Shamhna)"),
+    ((11, 1), "Día de los Muertos"),
+    ((11, 2), "Día de los Muertos"),
+    ((11, 11), "Remembrance Day"),
+    ((12, 21), "Winter Solstice"),
+    ((12, 24), "Christmas Eve"),
+    ((12, 25), "Christmas Day"),
+    ((12, 26), "St Stephen's Day"),
+    ((12, 31), "New Year's Eve"),
+]
 
 
 def get_events_and_holidays(now):
@@ -289,9 +343,12 @@ def get_events_and_holidays(now):
         get_nth_weekday_of_month(
             y, 6, target_weekday=6, n=3
         ): "Father’s Day [Ireland]",
+        get_last_saturday_of_month(
+            y, 3
+        ): "‘Earth Hour’ Day @ 20:30",
         get_last_sunday_of_month(y, 3): "Daylight Savings – Start [Ireland]",
         get_last_sunday_of_month(y, 10): "Daylight Savings – End [Ireland]",
-        thanksgiving_usa: "Thanksgiving [USA]",
+        thanksgiving_usa: "US Thanksgiving",
         thanksgiving_usa + timedelta(days=1): "Black Friday [USA]",
     }
 
@@ -304,32 +361,10 @@ def get_events_and_holidays(now):
         events.append(MULTI_FAITH_HOLIDAYS[date_key_full])
 
     # 3. Fixed Cultural / International Dates
-    fixed_calendar_events = {
-        (1, 1): "New Year's Day",
-        (1, 6): "Epiphany / Little Christmas",
-        (2, 1): "St Brigid's Day (Imbolc)",
-        (2, 14): "Valentine's Day",
-        (3, 8): "International Women's Day",
-        (3, 17): "St Patrick's Day",
-        (4, 22): "Earth Day",
-        (4, 23): "St George's Day",
-        (5, 1): "May Day",
-        (5, 5): "Cinco de Mayo",
-        (6, 16): "Bloomsday",
-        (6, 21): "Summer Solstice",
-        (10, 31): "Halloween (Oíche Shamhna)",
-        (11, 11): "Remembrance Day",
-        (12, 21): "Winter Solstice",
-        (12, 24): "Christmas Eve",
-        (12, 25): "Christmas Day",
-        (12, 26): "St Stephen's Day",
-        (12, 31): "New Year's Eve",
-    }
-    date_key = (now.month, now.day)
-    if date_key in fixed_calendar_events:
-        evt = fixed_calendar_events[date_key]
-        if evt not in events:
-            events.append(evt)
+    today_tuple = (now.month, now.day)
+    for event_date, event_name in FIXED_CALENDAR_EVENTS:
+        if event_date == today_tuple and event_name not in events:
+            events.append(event_name)
 
     # 4. Official Irish Bank Holidays via Nager.Date API
     try:
@@ -458,6 +493,13 @@ SAINTS_MAP = {
         (
             "Patron saint of ecology and animals, celebrated for humility and"
             " peace."
+        ),
+    ),
+    (10, 12): (
+        "St. Carlo Acutis",
+        (
+            "Italian teenager and computer programmer who is first millennial"
+            " saint; patron of the internet and youth."
         ),
     ),
     (10, 15): (
@@ -603,7 +645,7 @@ def get_catholic_saint_or_thought(now):
 
 
 # ==========================================
-# 5. DAILY SMILE
+# 5. DAILY SMILE (WITH SPOILER PUNCHLINE)
 # ==========================================
 def get_joke():
     try:
@@ -617,7 +659,10 @@ def get_joke():
             setup = joke_dict.get("setup", "").strip()
             punchline = joke_dict.get("punchline", "").strip()
             if setup and punchline:
-                return f'<i>"{setup}"</i>\n👉 <b>{punchline}</b>'
+                return (
+                    f'<i>"{setup}"</i>\n👉'
+                    f" <tg-spoiler><b>{punchline}</b></tg-spoiler>"
+                )
     except Exception:
         pass
 
@@ -633,7 +678,7 @@ def get_joke():
         ),
     ]
     q, a = random.choice(fallbacks)
-    return f'<i>"{q}"</i>\n👉 <b>{a}</b>'
+    return f'<i>"{q}"</i>\n👉 <tg-spoiler><b>{a}</b></tg-spoiler>'
 
 
 # ==========================================
@@ -753,7 +798,6 @@ def build_daily_digest():
     dublin_tz = pytz.timezone(TIMEZONE)
     now = datetime.now(dublin_tz)
 
-    # Date formatting: e.g. "Saturday 10.10.26"
     date_str = f"{now.strftime('%A')} {now.strftime('%d.%m.%y')}"
 
     salutation = get_salutation()
@@ -764,7 +808,6 @@ def build_daily_digest():
     finance_section = build_financial_section(now)
     closing_section = get_closing_section(now)
 
-    # Core Message Parts
     parts = [
         f"""
 <b>My Morning Brief</b>
@@ -798,14 +841,21 @@ def build_daily_digest():
 {joke}"""
     ]
 
-    # Add financial markets section if not Sunday
     if finance_section:
         parts.append(finance_section)
 
-    # Append closing & Cubby sign-off
     parts.append(closing_section)
 
-    return "\n\n".join(parts)
+    full_message = "\n\n".join(parts)
+
+    # Wednesday Special Monospace Formatting (weekday == 2)
+    # Telegram disallows nested formatting tags inside <pre>,
+    # so on Wednesdays we cleanly strip HTML tags and wrap in <pre>
+    if now.weekday() == 2:
+        plain_text = re.sub(r"<[^>]+>", "", full_message)
+        return f"<pre>{html.escape(plain_text)}</pre>"
+
+    return full_message
 
 
 def send_telegram(chat_id, text):
