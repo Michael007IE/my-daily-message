@@ -828,7 +828,7 @@ def get_schedule(now):
 
     try:
         res = requests.get(GOOGLE_CALENDAR_ICS, timeout=10)
-        cal = Calendar.from_ical(res.content)
+        cal = Calendar.from_ical(res.text)
         parser = recurring_ical_events.of(cal)
 
         start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
