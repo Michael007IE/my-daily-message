@@ -7,6 +7,8 @@ from flask import Flask, jsonify, request
 import pytz
 import requests
 import yfinance as yf
+import recurring_ical_events
+from icalendar import Calendar
 
 app = Flask(__name__)
 
@@ -790,6 +792,61 @@ def build_financial_section(now):
 <b>Today's Futures:</b>
 {futures_str}"""
 
+GOOGLE_CALENDAR_ICS = os.environ.get("GOOGLE_CALENDAR_ICS")
+
+
+def format_day_events(events, tzinfo):
+    if not events:
+        return "• No scheduled events"
+
+    def get_sort_time(event):
+        dt = event["DTSTART"].dt
+        if hasattr(dt, "hour"):
+            return dt.astimezone(tzinfo)
+        return datetime.combine(dt, datetime.min.time()).replace(tzinfo=tzinfo)
+
+    formatted = []
+    for event in sorted(events, key=get_sort_time):
+        summary = str(event.get("SUMMARY", "Busy"))
+        start = event["DTSTART"].dt
+
+        if hasattr(start, "hour"):
+            local_time = start.astimezone(tzinfo).strftime("%H:%M")
+            formatted.append(f"• <b>{local_time}</b> — {summary}")
+        else:
+            formatted.append(f"• <b>All Day</b> — {summary}")
+
+    return "\n".join(formatted)
+
+
+def get_schedule(now):
+    if not GOOGLE_CALENDAR_ICS:
+        return {
+            "today": "• Calendar not connected",
+            "tomorrow": "• Calendar not connected",
+        }
+
+    try:
+        res = requests.get(GOOGLE_CALENDAR_ICS, timeout=10)
+        cal = Calendar.from_ical(res.content)
+        parser = recurring_ical_events.of(cal)
+
+        start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_tomorrow = start_today + timedelta(days=1)
+        end_tomorrow = start_today + timedelta(days=2)
+
+        events_today = parser.between(start_today, start_tomorrow)
+        events_tomorrow = parser.between(start_tomorrow, end_tomorrow)
+
+        return {
+            "today": format_day_events(events_today, now.tzinfo),
+            "tomorrow": format_day_events(events_tomorrow, now.tzinfo),
+        }
+    except Exception:
+        return {
+            "today": "• Schedule temporarily unavailable",
+            "tomorrow": "• Schedule temporarily unavailable",
+        }
 
 # ==========================================
 # 7. ASSEMBLE FULL DIGEST MESSAGE
@@ -802,6 +859,7 @@ def build_daily_digest():
 
     salutation = get_salutation()
     weather = get_weather_and_sun()
+    schedule = get_schedule(now)
     events = get_events_and_holidays(now)
     saint_or_thought = get_catholic_saint_or_thought(now)
     joke = get_joke()
@@ -830,6 +888,13 @@ def build_daily_digest():
 • <b>Morning:</b> {weather['tom_morning']}
 • <b>Afternoon:</b> {weather['tom_afternoon']}
 • <b>Day Bounds:</b> {weather['tom_range']}
+
+<b>Schedule 🗓</b>
+<b>Today:</b>
+{schedule['today']}
+
+<b>Tomorrow:</b>
+{schedule['tomorrow']}
 
 <b>Events & Observances 🎉</b>
 {events}
