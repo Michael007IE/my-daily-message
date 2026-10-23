@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 import html
 import os
@@ -16,6 +17,7 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 CRON_SECRET = os.environ.get("CRON_SECRET", "clonsilla-dispatch-secure-key")
+GOOGLE_CALENDAR_ICS = os.environ.get("GOOGLE_CALENDAR_ICS")
 
 LAT = 53.3833
 LON = -6.4167
@@ -468,6 +470,14 @@ SAINTS_MAP = {
         "Assumption of the Blessed Virgin Mary",
         "Celebrates Mary's bodily assumption into heavenly glory.",
     ),
+    (8, 26): (
+        "St. Miriam (Mary of Jesus Crucified)",
+        (
+            "Discalced Carmelite mystic from Galilee, known as the 'Little"
+            " Arab', celebrated for deep humility, charity, and devotion to the"
+            " Holy Spirit."
+        ),
+    ),
     (8, 28): (
         "St. Augustine of Hippo",
         "Bishop, philosopher, and Doctor of the Church known for Confessions.",
@@ -508,6 +518,13 @@ SAINTS_MAP = {
         "St. Teresa of Ávila",
         "Doctor of the Church and mystic reformer of the Carmelite Order.",
     ),
+    (10, 19): (
+        "St. Laura of Córdoba",
+        (
+            "9th-century Spanish abbess of Cuteclara and martyr who remained"
+            " steadfast in her Christian faith."
+        ),
+    ),
     (10, 28): (
         "Sts. Simon and Jude",
         "Apostles of Christ; Jude is widely venerated as patron of lost causes.",
@@ -525,6 +542,13 @@ SAINTS_MAP = {
         (
             "Princess revered for her deep devotion to nursing the sick and"
             " poor."
+        ),
+    ),
+    (11, 27): (
+        "St. Feargal (Virgil of Salzburg)",
+        (
+            "Irish abbot of Aghaboe, astronomer, and missionary bishop of"
+            " Salzburg; apostle of Carinthia."
         ),
     ),
     (12, 6): (
@@ -658,8 +682,8 @@ def get_joke():
         data = response.json()
         joke_dict = data[0] if isinstance(data, list) and data else data
         if isinstance(joke_dict, dict):
-            setup = joke_dict.get("setup", "").strip()
-            punchline = joke_dict.get("punchline", "").strip()
+            setup = html.escape(joke_dict.get("setup", "").strip())
+            punchline = html.escape(joke_dict.get("punchline", "").strip())
             if setup and punchline:
                 return (
                     f'<i>"{setup}"</i>\n👉'
@@ -684,7 +708,7 @@ def get_joke():
 
 
 # ==========================================
-# 6. FINANCIAL MARKETS
+# 6. FINANCIAL MARKETS (BATCHED YFINANCE)
 # ==========================================
 def format_pct(val):
     if val is None:
@@ -695,69 +719,107 @@ def format_pct(val):
 
 
 def get_financial_data(include_futures=True):
-    results = {}
-    try:
-        eurusd = yf.Ticker("EURUSD=X")
-        fx_hist = eurusd.history(period="5d")
-        if len(fx_hist) >= 2:
-            latest = fx_hist["Close"].iloc[-1]
-            prev = fx_hist["Close"].iloc[-2]
-            pct = ((latest - prev) / prev) * 100
-            results["fx"] = f"{latest:.4f} ({format_pct(pct)})"
-        else:
-            latest = fx_hist["Close"].iloc[-1]
-            results["fx"] = f"{latest:.4f}"
-    except Exception:
-        results["fx"] = "Data unavailable"
+    results = {"fx": "Data unavailable", "indices": [], "stocks": [], "futures": []}
 
     indices = {
         "S&P 500": "^GSPC",
         "Nasdaq 100": "^NDX",
         "Nasdaq Composite": "^IXIC",
     }
-    index_results = []
-    for label, ticker in indices.items():
-        try:
-            t = yf.Ticker(ticker)
-            hist = t.history(period="5d")
-            if len(hist) >= 2:
-                close = hist["Close"].iloc[-1]
-                prev = hist["Close"].iloc[-2]
-                pct = ((close - prev) / prev) * 100
-                index_results.append(f"• {label}: {format_pct(pct)}")
-            else:
-                index_results.append(f"• {label}: N/A")
-        except Exception:
-            index_results.append(f"• {label}: Unavailable")
-    results["indices"] = index_results
+    stocks = [
+        ("NVDA", "NVDA", "$"),
+        ("AAPL", "AAPL", "$"),
+        ("TSLA", "TSLA", "$"),
+        ("GOOGL", "GOOGL", "$"),
+        ("ASML.AS", "ASML.AS", "€"),
+    ]
+    futures = {
+        "S&P 500 Futures (ES)": "ES=F",
+        "Nasdaq 100 Futures (NQ)": "NQ=F",
+    }
 
+    # Assemble all required tickers into a single list
+    all_tickers = ["EURUSD=X"] + list(indices.values()) + [t for _, t, _ in stocks]
     if include_futures:
-        futures = {
-            "S&P 500 Futures (ES)": "ES=F",
-            "Nasdaq 100 Futures (NQ)": "NQ=F",
-        }
-        futures_results = []
+        all_tickers.extend(futures.values())
+
+    try:
+        # Fetch all tickers concurrently in one multithreaded batch
+        raw_data = yf.download(
+            tickers=all_tickers,
+            period="5d",
+            group_by="ticker",
+            threads=True,
+            progress=False,
+        )
+    except Exception:
+        raw_data = None
+
+    def get_ticker_df(symbol):
+        """Extracts a clean, NaN-free DataFrame for a single ticker from the batch."""
+        if raw_data is None or raw_data.empty or symbol not in raw_data:
+            return None
+        df = raw_data[symbol].dropna(how="all")
+        return df if not df.empty else None
+
+    # 1. FX Rate (EUR/USD)
+    fx_df = get_ticker_df("EURUSD=X")
+    if fx_df is not None:
+        if len(fx_df) >= 2:
+            latest = float(fx_df["Close"].iloc[-1])
+            prev = float(fx_df["Close"].iloc[-2])
+            pct = ((latest - prev) / prev) * 100
+            results["fx"] = f"{latest:.4f} ({format_pct(pct)})"
+        else:
+            latest = float(fx_df["Close"].iloc[-1])
+            results["fx"] = f"{latest:.4f}"
+
+    # 2. Major Indices
+    for label, ticker in indices.items():
+        df = get_ticker_df(ticker)
+        if df is not None and len(df) >= 2:
+            close = float(df["Close"].iloc[-1])
+            prev = float(df["Close"].iloc[-2])
+            pct = ((close - prev) / prev) * 100
+            results["indices"].append(f"• {label}: {format_pct(pct)}")
+        else:
+            results["indices"].append(f"• {label}: Unavailable")
+
+    # 3. Top Stocks
+    for label, ticker, currency in stocks:
+        df = get_ticker_df(ticker)
+        if df is not None:
+            close = float(df["Close"].iloc[-1])
+            if len(df) >= 2:
+                prev = float(df["Close"].iloc[-2])
+                pct = ((close - prev) / prev) * 100
+                results["stocks"].append(
+                    f"• <b>{label}:</b> <code>{currency}{close:.2f}</code> ({format_pct(pct)})"
+                )
+            else:
+                results["stocks"].append(
+                    f"• <b>{label}:</b> <code>{currency}{close:.2f}</code>"
+                )
+        else:
+            results["stocks"].append(f"• <b>{label}:</b> Unavailable")
+
+    # 4. US Index Futures
+    if include_futures:
         for label, ticker in futures.items():
-            try:
-                t = yf.Ticker(ticker)
-                hist = t.history(period="2d")
-                if len(hist) >= 2:
-                    cur = hist["Close"].iloc[-1]
-                    prev = hist["Close"].iloc[-2]
+            df = get_ticker_df(ticker)
+            if df is not None:
+                if len(df) >= 2:
+                    cur = float(df["Close"].iloc[-1])
+                    prev = float(df["Close"].iloc[-2])
                     pct = ((cur - prev) / prev) * 100
-                    futures_results.append(f"• {label}: {format_pct(pct)}")
-                elif len(hist) == 1:
-                    cur = hist["Close"].iloc[-1]
-                    prev = hist["Open"].iloc[-1]
+                    results["futures"].append(f"• {label}: {format_pct(pct)}")
+                elif len(df) == 1:
+                    cur = float(df["Close"].iloc[-1])
+                    prev = float(df["Open"].iloc[-1])
                     pct = ((cur - prev) / prev) * 100
-                    futures_results.append(f"• {label}: {format_pct(pct)}")
-                else:
-                    futures_results.append(f"• {label}: Market Closed")
-            except Exception:
-                futures_results.append(f"• {label}: Unavailable")
-        results["futures"] = futures_results
-    else:
-        results["futures"] = []
+                    results["futures"].append(f"• {label}: {format_pct(pct)}")
+            else:
+                results["futures"].append(f"• {label}: Unavailable")
 
     return results
 
@@ -769,19 +831,24 @@ def build_financial_section(now):
     if weekday == 6:
         return ""
 
-    # Saturday: FX and prior session closes only (no futures)
+    # Saturday: FX, prior session index closes, and top stocks (no futures)
     if weekday == 5:
         data = get_financial_data(include_futures=False)
         indices_str = "\n".join(data["indices"])
+        stocks_str = "\n".join(data["stocks"])
         return f"""<b>Financial Markets 📈</b>
 • <b>EUR / USD:</b> <code>{data['fx']}</code>
 
 <b>Prior Session Index Closes:</b>
-{indices_str}"""
+{indices_str}
+
+<b>Top Stocks:</b>
+{stocks_str}"""
 
     # Monday - Friday: Full section
     data = get_financial_data(include_futures=True)
     indices_str = "\n".join(data["indices"])
+    stocks_str = "\n".join(data["stocks"])
     futures_str = "\n".join(data["futures"])
     return f"""<b>Financial Markets 📈</b>
 • <b>EUR / USD:</b> <code>{data['fx']}</code>
@@ -789,12 +856,16 @@ def build_financial_section(now):
 <b>Prior Session Index Closes:</b>
 {indices_str}
 
+<b>Top Stocks:</b>
+{stocks_str}
+
 <b>Today's Futures:</b>
 {futures_str}"""
 
-GOOGLE_CALENDAR_ICS = os.environ.get("GOOGLE_CALENDAR_ICS")
 
-
+# ==========================================
+# 7. GOOGLE CALENDAR SCHEDULE
+# ==========================================
 def format_day_events(events, tzinfo):
     if not events:
         return "• No scheduled events"
@@ -807,7 +878,7 @@ def format_day_events(events, tzinfo):
 
     formatted = []
     for event in sorted(events, key=get_sort_time):
-        summary = str(event.get("SUMMARY", "Busy"))
+        summary = html.escape(str(event.get("SUMMARY", "Busy")))
         start = event["DTSTART"].dt
 
         if hasattr(start, "hour"):
@@ -848,8 +919,9 @@ def get_schedule(now):
             "tomorrow": "• Schedule temporarily unavailable",
         }
 
+
 # ==========================================
-# 7. ASSEMBLE FULL DIGEST MESSAGE
+# 8. ASSEMBLE FULL DIGEST MESSAGE (CONCURRENT)
 # ==========================================
 def build_daily_digest():
     dublin_tz = pytz.timezone(TIMEZONE)
@@ -857,18 +929,28 @@ def build_daily_digest():
 
     date_str = f"{now.strftime('%A')} {now.strftime('%d.%m.%y')}"
 
+    # Instantaneous local helper functions
     salutation = get_salutation()
-    weather = get_weather_and_sun()
-    schedule = get_schedule(now)
-    events = get_events_and_holidays(now)
     saint_or_thought = get_catholic_saint_or_thought(now)
-    joke = get_joke()
-    finance_section = build_financial_section(now)
     closing_section = get_closing_section(now)
 
+    # Dispatch all 5 network-bound API requests concurrently
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_weather = executor.submit(get_weather_and_sun)
+        future_schedule = executor.submit(get_schedule, now)
+        future_events = executor.submit(get_events_and_holidays, now)
+        future_joke = executor.submit(get_joke)
+        future_finance = executor.submit(build_financial_section, now)
+
+        # Gather results (waits only as long as the single slowest call)
+        weather = future_weather.result()
+        schedule = future_schedule.result()
+        events = future_events.result()
+        joke = future_joke.result()
+        finance_section = future_finance.result()
+
     parts = [
-        f"""
-<b>My Morning Brief</b>
+        f"""<b>My Morning Brief</b>
 <i>{date_str}</i>
 ----------------------------------------
 
@@ -937,7 +1019,7 @@ def send_telegram(chat_id, text):
 
 
 # ==========================================
-# 8. WEB SERVER ROUTES
+# 9. WEB SERVER ROUTES
 # ==========================================
 @app.route("/", methods=["GET"])
 def health_check():
