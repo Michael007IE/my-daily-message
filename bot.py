@@ -898,20 +898,51 @@ def get_schedule(now):
         }
 
     try:
-        res = requests.get(GOOGLE_CALENDAR_ICS, timeout=10)
-        cal = Calendar.from_ical(res.text)
-        parser = recurring_ical_events.of(cal)
-
         start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         start_tomorrow = start_today + timedelta(days=1)
         end_tomorrow = start_today + timedelta(days=2)
 
-        events_today = parser.between(start_today, start_tomorrow)
-        events_tomorrow = parser.between(start_tomorrow, end_tomorrow)
+        all_events_today = []
+        all_events_tomorrow = []
+
+        # 1. Support multiple comma-separated URLs
+        urls = [url.strip() for url in GOOGLE_CALENDAR_ICS.split(",") if url.strip()]
+        
+        # 2. Fetch and parse each calendar
+        for url in urls:
+            try:
+                res = requests.get(url, timeout=10)
+                cal = Calendar.from_ical(res.text)
+                parser = recurring_ical_events.of(cal)
+
+                all_events_today.extend(parser.between(start_today, start_tomorrow))
+                all_events_tomorrow.extend(parser.between(start_tomorrow, end_tomorrow))
+            except Exception:
+                # If one calendar fails (e.g., timeout), skip it and try the others
+                continue
+
+        # 3. Deduplicate overlapping events
+        def deduplicate(events):
+            unique_events = []
+            seen = set()
+            for event in events:
+                summary = str(event.get("SUMMARY", "Busy")).strip()
+                start_val = event["DTSTART"].dt
+                
+                # Use a lowercase summary and start time as the unique signature
+                key = (summary.lower(), start_val)
+                
+                if key not in seen:
+                    seen.add(key)
+                    unique_events.append(event)
+            return unique_events
+
+        today_deduped = deduplicate(all_events_today)
+        tomorrow_deduped = deduplicate(all_events_tomorrow)
 
         return {
-            "today": format_day_events(events_today, now.tzinfo),
-            "tomorrow": format_day_events(events_tomorrow, now.tzinfo),
+            "today": format_day_events(today_deduped, now.tzinfo),
+            "tomorrow": format_day_events(tomorrow_deduped, now.tzinfo),
         }
     except Exception:
         return {
